@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.10)
 project(brlaser CXX)
 set(BRLASER_VERSION "6")
 
@@ -96,6 +96,18 @@ if(NOT HAVE_CUPS_RASTER_H)
 endif()
 
 
+## Configure PPD compiler (macOS only)
+
+if(APPLE)
+  find_program(PPDC NAMES ppdc)
+  if(PPDC)
+    message(STATUS "Found ppdc: ${PPDC}")
+  else()
+    message(WARNING "ppdc not found - will install .drv file instead of individual PPD files")
+  endif()
+endif()
+
+
 ## Build instructions
 
 configure_file(
@@ -130,11 +142,58 @@ add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND})
 add_dependencies(check test_lest test_line test_block test_job)
 
 
+## PPD Generation (macOS only)
+
+if(APPLE AND PPDC)
+  add_custom_command(
+    OUTPUT "${PROJECT_BINARY_DIR}/ppd_generated"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${PROJECT_BINARY_DIR}/ppd"
+    COMMAND ${PPDC} -d "${PROJECT_BINARY_DIR}/ppd" "${PROJECT_BINARY_DIR}/brlaser.drv"
+    COMMAND ${CMAKE_COMMAND} -E touch "${PROJECT_BINARY_DIR}/ppd_generated"
+    DEPENDS "${PROJECT_BINARY_DIR}/brlaser.drv"
+    COMMENT "Generating PPD files from brlaser.drv")
+
+  add_custom_target(generate_ppds ALL DEPENDS "${PROJECT_BINARY_DIR}/ppd_generated")
+
+  message(STATUS "Will generate individual PPD files for macOS installation")
+endif()
+
+
 # Installation
+
+if(NOT DEFINED CUPS_DRV_DIR)
+  if(APPLE)
+    set(CUPS_DRV_DIR "/Library/Printers/PPDs/Contents/Resources")
+  else()
+    set(CUPS_DRV_DIR "${CUPS_DATA_DIR}/drv")
+  endif()
+endif()
+
+set(CUPS_SERVER_BIN "${CUPS_SERVER_BIN}" CACHE PATH "CUPS server binary directory")
+set(CUPS_DRV_DIR "${CUPS_DRV_DIR}" CACHE PATH "CUPS driver/PPD directory")
+
+message(STATUS "CUPS filter directory: ${CUPS_SERVER_BIN}/filter")
+message(STATUS "CUPS driver directory: ${CUPS_DRV_DIR}")
 
 install(
   TARGETS rastertobrlaser
   DESTINATION "${CUPS_SERVER_BIN}/filter")
-install(
-  FILES "${PROJECT_BINARY_DIR}/brlaser.drv"
-  DESTINATION "${CUPS_DATA_DIR}/drv")
+
+if(APPLE AND PPDC)
+  # Install individual PPD files on macOS
+  install(
+    DIRECTORY "${PROJECT_BINARY_DIR}/ppd/"
+    DESTINATION "${CUPS_DRV_DIR}"
+    FILES_MATCHING PATTERN "*.ppd")
+else()
+  # Install .drv file on non-macOS or if ppdc not available
+  install(
+    FILES "${PROJECT_BINARY_DIR}/brlaser.drv"
+    DESTINATION "${CUPS_DRV_DIR}")
+endif()
+
+# Uninstall target
+add_custom_target(uninstall
+  COMMAND xargs rm -f < install_manifest.txt
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+  COMMENT "Uninstalling files listed in install_manifest.txt")
